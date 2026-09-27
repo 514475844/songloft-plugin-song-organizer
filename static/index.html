@@ -163,6 +163,9 @@ function buildPlans(cfg){
   allSongs.forEach(function(s){
     if (!inScopes(s.file_path||'', cfg.scopes)) return;
     var p = s.file_path.replace(/\\/g,'/').split('/');
+    /* [FIX] organize 的 target_path 相对 music 根（API 会自动补 music/ 前缀），
+       实测带 music/ 前缀会生成 music/music/ 双层目录 */
+    var rel = (p[0] === 'music') ? p.slice(1) : p;
     var ext = (s.file_path.match(/\.([A-Za-z0-9]+)$/) || [,''])[1];
     var r = parseOne(s.file_path, s.title, s.artist);
     if (r.skip) { skipped.push({title:(s.title||p[p.length-1]), reason:r.reason}); return; }
@@ -171,9 +174,9 @@ function buildPlans(cfg){
     var base = (cfg.mode === 'at') ? (r.artist + ' - ' + r.title) : (r.title + ' - ' + r.artist);
     var dir;
     if (cfg.groupByArtist) {
-      dir = p.slice(0, 2).join('/') + '/' + safeSeg(r.artist);  // music/<顶层>/<歌手>
+      dir = rel.slice(0, 1).join('/') + '/' + safeSeg(r.artist);   // download/<歌手>
     } else {
-      dir = p.slice(0, p.length-1).join('/');
+      dir = rel.slice(0, rel.length-1).join('/');
     }
     var fname = safeSeg(pre + base);
     var target = dir + '/' + fname + (ext ? '.' + ext : '');
