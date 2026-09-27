@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>歌曲信息整理</title>
+<style>
+:root{--bg:#f6f4f1;--card:#fff;--tx:#2b2b2b;--sub:#8a8a8a;--line:#e8e4df;--pri:#e8848a;--ok:#2f9e8f;--warn:#e08a3c;}
+@media (prefers-color-scheme: dark){:root{--bg:#1b1d22;--card:#24262c;--tx:#e4e4e4;--sub:#9a9a9a;--line:#34373e;}}
+*{box-sizing:border-box}
+body{margin:0;padding:18px;font-family:system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;background:var(--bg);color:var(--tx);font-size:14px;}
+h1{font-size:19px;margin:0 0 4px}
+.sub{color:var(--sub);font-size:12px;margin-bottom:14px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px 16px;margin-bottom:12px}
+label{cursor:pointer}
+.row{display:flex;flex-wrap:wrap;gap:14px;align-items:center;margin:6px 0}
+fieldset{border:1px solid var(--line);border-radius:10px;margin:8px 0;padding:8px 10px}
+legend{font-size:12px;color:var(--sub);padding:0 6px}
+.scopes{display:flex;flex-wrap:wrap;gap:6px 14px;max-height:180px;overflow:auto}
+.scopes label{font-size:13px}
+button{border:0;border-radius:10px;padding:9px 18px;font-size:14px;cursor:pointer;background:var(--pri);color:#fff}
+button.ghost{background:transparent;color:var(--tx);border:1px solid var(--line)}
+button:disabled{opacity:.45;cursor:not-allowed}
+table{width:100%;border-collapse:collapse;font-size:12.5px;margin-top:8px}
+th,td{text-align:left;padding:5px 7px;border-bottom:1px solid var(--line);word-break:break-all}
+th{color:var(--sub);font-weight:600}
+.stat{margin:10px 0 0;font-size:13px}
+.ok{color:var(--ok)} .warn{color:var(--warn)}
+.tag{display:inline-block;background:var(--line);border-radius:8px;padding:1px 8px;font-size:11px;margin:1px}
+#bar{height:6px;background:var(--line);border-radius:3px;overflow:hidden;display:none;margin-top:8px}
+#bar>div{height:100%;background:var(--pri);width:0%;transition:width .2s}
+input[type=text]{background:var(--bg);color:var(--tx);border:1px solid var(--line);border-radius:8px;padding:7px 10px;width:240px}
+</style>
+</head>
+<body>
+<h1>🎵 歌曲信息整理</h1>
+<div class="sub">信息来源优先级：库内标签 → 文件名「歌名 - 作者」→ 父目录名兜底；解析不出的跳过不猜。</div>
+
+<div class="card">
+  <fieldset><legend>命名模式（单选）</legend>
+    <div class="row">
+      <label><input type="radio" name="mode" value="ta" checked> 歌名 - 作者</label>
+      <label><input type="radio" name="mode" value="at"> 作者 - 歌名</label>
+    </div>
+  </fieldset>
+  <div class="row">
+    <label><input type="checkbox" id="keepIndex"> 保留原序号（03.原文件名 → 03.歌名 - 作者）</label>
+    <label><input type="checkbox" id="groupByArtist" checked> 相同歌手归入同一目录</label>
+  </div>
+  <div class="row">
+    <label><input type="checkbox" id="dryRun" checked> 试运行（只预览，不落盘）</label>
+  </div>
+</div>
+
+<div class="card">
+  <fieldset><legend>整理范围（只处理勾选目录内的歌曲）</legend>
+    <div class="row">
+      <label><input type="checkbox" id="allScopes" checked> <b>全选 / 全不选</b></label>
+      <span id="scopeCount" class="sub"></span>
+    </div>
+    <div class="scopes" id="scopes">加载中…</div>
+  </fieldset>
+</div>
+
+<div class="card">
+  <div class="row">
+    <button id="btnRun" onclick="run()">🚀 开始整理</button>
+    <button class="ghost" onclick="undo()">↩️ 撤销上次执行</button>
+    <span id="status" class="sub"></span>
+  </div>
+  <div id="bar"><div></div></div>
+  <div id="out"></div>
+</div>
+
+<script>
+'use strict';
+/* ---------- 鉴权（与 now-playing 相同的三级回退） ---------- */
+function token(){
+  var q = new URLSearchParams(location.search).get('access_token');
+  if (q) return q;
+  var direct = window.SongloftPlugin && window.SongloftPlugin.getAuthToken && window.SongloftPlugin.getAuthToken();
+  if (direct) return direct;
+  try { return JSON.parse(localStorage.getItem('songloft-auth')||'{}').accessToken || ''; } catch(e){ return ''; }
+}
+function api(path, method, body){
+  var h = {};
+  var t = token();
+  if (t) h.Authorization = 'Bearer ' + t;
+  if (body) h['Content-Type'] = 'application/json';
+  return fetch(path, {method: method||'GET', headers: h, body: body ? JSON.stringify(body) : undefined})
+    .then(function(r){
+      if (!r.ok) throw new Error('API ' + r.status);
+      return r.text().then(function(x){ return x ? JSON.parse(x) : {}; });
+    });
+}
+
+/* ---------- 工具 ---------- */
+const GENERIC = {'download':'','music':'','cache':'','tmp':'','歌曲':'','专辑':'','新建文件夹':'','download (1)':''};
+function cleanTitle(t){
+  return (t||'').replace(/^\s*(?:\d+\s*[.、\-_]\s*)+/, '')
+                .replace(/\s+[-–—]\s+[^-–—]{1,24}\s*$/, '').trim();
+}
+function keepPrefix(stem){
+  var m = stem.match(/^\s*((?:\d+\s*[.、\-_]\s*)+)/);
+  return m ? m[1].trim() : '';
+}
+function safeSeg(s){ return (s||'').replace(/[\\/:*?"<>|]/g, '_').trim(); }
+function normKey(s){ return (s||'').replace(/^﻿/, '').trim().toLowerCase(); }
+
+/* 从 file_path 解析 (title, artist)，返回 {title, artist} 或 {skip:true, reason} */
+function parseOne(fp, title, artist){
+  var parts = fp.replace(/\\/g,'/').split('/');
+  var stem = parts[parts.length-1].replace(/\.[^.]+$/, '');
+  var parent = parts.length >= 3 ? parts[parts.length-2] : '';
+  var a = (artist||'').trim();
+  var t = cleanTitle(title || stem);
+  if (!t || /[\ufffd]/.test(t)) return {skip:true, reason:'标题缺失或乱码'};
+  if (!a && / [-–—] /.test(stem)) {
+    var i = stem.search(/ [-–—] /);
+    var l = stem.slice(0, i), r = stem.slice(i+3).trim();
+    if (r && r.length <= 24 && l.trim()) { t = cleanTitle(l); a = r; }
+  }
+  if (!a && parent && !GENERIC[normKey(parent)]) a = parent.trim();
+  if (!a) return {skip:true, reason:'找不到歌手（标签/文件名/父目录均无）'};
+  if (!t) return {skip:true, reason:'找不到歌名'};
+  return {title:t, artist:a};
+}
+
+/* ---------- 状态 ---------- */
+var CFG_KEY = 'song-organizer-cfg-v1';
+var allSongs = [], scopes = [];
+function loadCfg(){
+  try { return JSON.parse(localStorage.getItem(CFG_KEY)||'{}'); } catch(e){ return {}; }
+}
+function saveCfg(c){ try{ localStorage.setItem(CFG_KEY, JSON.stringify(c)); }catch(e){} }
+function cfg(){
+  var c = loadCfg();
+  c.mode = (document.querySelector('input[name=mode]:checked')||{}).value || 'ta';
+  c.keepIndex = document.getElementById('keepIndex').checked;
+  c.groupByArtist = document.getElementById('groupByArtist').checked;
+  c.dryRun = document.getElementById('dryRun').checked;
+  var sel = [];
+  document.querySelectorAll('#scopes input[data-scope]:checked').forEach(function(x){ sel.push(x.getAttribute('data-scope')); });
+  c.scopes = sel;
+  return c;
+}
+
+/* ---------- 范围推导 ---------- */
+function scopeOf(fp){
+  var p = fp.replace(/\\/g,'/').split('/');
+  if (p.length >= 3) return p[1] + '/' + p[2];
+  if (p.length === 2) return p[1];
+  return '(根目录)';
+}
+function inScopes(fp, sel){
+  var s = scopeOf(fp);
+  return sel.indexOf(s) >= 0;
+}
+
+/* ---------- 目标路径 ---------- */
+function buildPlans(cfg){
+  var used = {}, plans = [], skipped = [];
+  allSongs.forEach(function(s){
+    if (!inScopes(s.file_path||'', cfg.scopes)) return;
+    var p = s.file_path.replace(/\\/g,'/').split('/');
+    var ext = (s.file_path.match(/\.([A-Za-z0-9]+)$/) || [,''])[1];
+    var r = parseOne(s.file_path, s.title, s.artist);
+    if (r.skip) { skipped.push({title:(s.title||p[p.length-1]), reason:r.reason}); return; }
+    var pre = cfg.keepIndex ? keepPrefix(p[p.length-1].replace(/\.[^.]+$/,'')) : '';
+    if (pre) pre += ' ';
+    var base = (cfg.mode === 'at') ? (r.artist + ' - ' + r.title) : (r.title + ' - ' + r.artist);
+    var dir;
+    if (cfg.groupByArtist) {
+      dir = p.slice(0, 2).join('/') + '/' + safeSeg(r.artist);  // music/<顶层>/<歌手>
+    } else {
+      dir = p.slice(0, p.length-1).join('/');
+    }
+    var fname = safeSeg(pre + base);
+    var target = dir + '/' + fname + (ext ? '.' + ext : '');
+    if (target === s.file_path) return;                       // 已是目标名
+    var k = normKey(target), d = 1;
+    while (used[k] || target === s.file_path) {               // 批内同名去重
+      d++;
+      target = dir + '/' + fname + ' (' + d + ')' + (ext ? '.' + ext : '');
+      k = normKey(target);
+      if (d > 50) break;
+    }
+    used[k] = 1;
+    plans.push({id: s.id, from: s.file_path, to: target});
+  });
+  return {plans: plans, skipped: skipped};
+}
+
+/* ---------- 渲染 ---------- */
+function esc(s){ return (s||'').replace(/[&<>"]/g, function(c){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]; }); }
+function renderPreview(res){
+  var h = '<div class="stat">共 <b>' + res.plans.length + '</b> 首待整理，跳过 <b>' +
+          res.skipped.length + '</b> 首' + (res.plans.length ? '（未落盘，确认无误后取消试运行再执行）' : '') + '</div>';
+  if (res.skipped.length) {
+    h += '<div class="stat warn">跳过清单：</div><div>' + res.skipped.slice(0,80).map(function(x){
+      return '<span class="tag">' + esc(x.title) + ' —— ' + esc(x.reason) + '</span>'; }).join('') + '</div>';
+  }
+  if (res.plans.length) {
+    h += '<table><tr><th>#</th><th>原路径</th><th>→</th><th>新路径</th></tr>' +
+      res.plans.slice(0, 400).map(function(x, i){
+        return '<tr><td>' + (i+1) + '</td><td>' + esc(x.from) + '</td><td>→</td><td>' + esc(x.to) + '</td></tr>';
+      }).join('') + '</table>' +
+      (res.plans.length > 400 ? '<div class="sub">（仅显示前 400 行）</div>' : '');
+  }
+  document.getElementById('out').innerHTML = h;
+}
+function renderRun(res){
+  var h = '<div class="stat ok">✔ 已处理 <b>' + res.ok + '</b> / ' + res.total +
+          '，失败 ' + res.fail + '，跳过 ' + res.skipped.length + '，已触发重新扫描。</div>';
+  if (res.failList.length)
+    h += '<div class="stat warn">失败明细：</div><div>' + res.failList.slice(0,40).map(function(x){
+      return '<span class="tag">' + esc(x.name) + ' —— ' + esc(x.reason) + '</span>'; }).join('') + '</div>';
+  if (res.skipped.length)
+    h += '<div class="stat warn">跳过清单：</div><div>' + res.skipped.slice(0,80).map(function(x){
+      return '<span class="tag">' + esc(x.title) + ' —— ' + esc(x.reason) + '</span>'; }).join('') + '</div>';
+  document.getElementById('out').innerHTML = h;
+}
+
+/* ---------- 主流程 ---------- */
+function setBusy(b, txt){
+  document.getElementById('btnRun').disabled = b;
+  document.getElementById('status').textContent = txt || '';
+  document.getElementById('bar').style.display = b ? 'block' : 'none';
+}
+async function run(){
+  var cfgv = cfg();
+  if (!cfgv.scopes.length) { alert('请至少勾选一个整理范围'); return; }
+  saveCfg(cfgv);
+  setBusy(true, '加载曲库…');
+  try {
+    var data = await api('/api/v1/songs?limit=5000');
+    allSongs = data.songs || [];
+    var res = buildPlans(cfgv);
+    if (!res.plans.length) { renderPreview(res); setBusy(false, '没有需要整理的歌曲'); return; }
+    if (cfgv.dryRun) { renderPreview(res); setBusy(false, '试运行完成（未落盘）'); return; }
+    /* 真执行：串行分批，每批 ≤100 */
+    var okN = 0, failN = 0, failList = [], undo = [];
+    var batches = [];
+    for (var i = 0; i < res.plans.length; i += 100) batches.push(res.plans.slice(i, i+100));
+    for (var b = 0; b < batches.length; b++) {
+      setBusy(true, '执行中… 第 ' + (b+1) + '/' + batches.length + ' 批');
+      var st = await api('/api/v1/songs/organize', 'POST', batches[b]);
+      (st || []).forEach(function(r){
+        if (r.status === 'ok') {
+          okN++;
+          var plan = batches[b].filter(function(x){ return x.id === r.id; })[0];
+          if (plan) undo.push({id: r.id, from: plan.from, to: r.file_path || plan.to});
+        } else { failN++; failList.push({name: (plan2name(batches[b], r.id)), reason: r.status || 'unknown'}); }
+      });
+      document.querySelector('#bar>div').style.width = Math.round((b+1)*100/batches.length) + '%';
+    }
+    try { await api('/api/v1/scan', 'POST', {}); } catch(e){}
+    try {
+      var prev = loadCfg(); prev.undo = undo.slice(-2000); saveCfg(prev);
+    } catch(e){}
+    renderRun({ok: okN, fail: failN, total: res.plans.length, failList: failList, skipped: res.skipped});
+    setBusy(false, '完成');
+  } catch(e) {
+    setBusy(false, '出错：' + e.message);
+    document.getElementById('out').innerHTML = '<div class="stat warn">出错：' + esc(e.message) + '</div>';
+  }
+}
+function plan2name(batch, id){
+  var p = batch.filter(function(x){ return x.id === id; })[0];
+  return p ? p.from : ('id=' + id);
+}
+async function undo(){
+  var c = loadCfg();
+  if (!c.undo || !c.undo.length) { alert('没有可撤销的记录'); return; }
+  if (!confirm('将上次执行的 ' + c.undo.length + ' 首歌移回原路径，继续？')) return;
+  setBusy(true, '撤销中…');
+  try {
+    var batch = c.undo.map(function(x){ return {id: x.id, target_path: x.from}; });
+    for (var i = 0; i < batch.length; i += 100) {
+      await api('/api/v1/songs/organize', 'POST', batch.slice(i, i+100));
+    }
+    try { await api('/api/v1/scan', 'POST', {}); } catch(e){}
+    c.undo = []; saveCfg(c);
+    alert('撤销完成，已重新扫描');
+  } catch(e) { alert('撤销失败：' + e.message); }
+  setBusy(false, '');
+}
+
+/* ---------- 初始化 ---------- */
+(async function init(){
+  try { var t = window.SongloftPlugin && window.SongloftPlugin.getTheme && window.SongloftPlugin.getTheme();
+    if (t === 'dark') document.documentElement.style.colorScheme = 'dark'; } catch(e){}
+  var c0 = loadCfg();
+  if (c0.mode) document.querySelector('input[name=mode][value=' + c0.mode + ']').checked = true;
+  if (c0.keepIndex) document.getElementById('keepIndex').checked = true;
+  if (c0.groupByArtist === false) document.getElementById('groupByArtist').checked = false;
+  if (c0.dryRun === false) document.getElementById('dryRun').checked = false;
+  document.getElementById('allScopes').addEventListener('change', function(e){
+    document.querySelectorAll('#scopes input[data-scope]').forEach(function(x){ x.checked = e.target.checked; });
+  });
+  setBusy(true, '加载曲库与目录…');
+  try {
+    var data = await api('/api/v1/songs?limit=5000');
+    allSongs = data.songs || [];
+    var set = {};
+    allSongs.forEach(function(s){ if (s.file_path) set[scopeOf(s.file_path)] = 1; });
+    scopes = Object.keys(set).sort();
+    var saved = c0.scopes || [];
+    document.getElementById('scopes').innerHTML = scopes.map(function(s){
+      var on = !saved.length || saved.indexOf(s) >= 0;
+      return '<label><input type="checkbox" data-scope="' + esc(s) + '"' + (on ? ' checked' : '') + '> ' + esc(s) + '</label>';
+    }).join('');
+    document.getElementById('scopeCount').textContent = '共 ' + scopes.length + ' 个目录 / ' + allSongs.length + ' 首歌';
+  } catch(e) {
+    document.getElementById('scopes').textContent = '加载失败：' + e.message;
+  }
+  setBusy(false, '');
+})();
+</script>
+</body>
+</html>
