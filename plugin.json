@@ -13,11 +13,26 @@
   "renderEngine": "webview",
   "staticHash": false,
   "permissions": [
-    "storage", "persistent-storage", "songs.read", "songs.write",
-    "playlists.read", "playlists.write", "fs", "fs:music", "fs:external",
-    "inter-plugin", "command", "jsenv", "net", "websocket"
+    "storage",
+    "persistent-storage",
+    "songs.read",
+    "songs.write",
+    "playlists.read",
+    "playlists.write",
+    "fs",
+    "fs:music",
+    "fs:external",
+    "inter-plugin",
+    "command",
+    "jsenv",
+    "net",
+    "websocket"
   ],
-  "publicPaths": ["static/"],
+  "publicPaths": [
+    "static/"
+  ],
   "updateUrl": "https://raw.githubusercontent.com/514475844/songloft-plugin-song-organizer/main/plugin.json",
-  "download_url": "https://github.com/514475844/songloft-plugin-song-organizer/releases/download/v0.1.0/song-organizer.jsplugin.zip"
+  "download_url": "https://github.com/514475844/songloft-plugin-song-organizer/releases/download/v0.1.0/song-organizer.jsplugin.zip",
+  "entryHash": "b892a2f7547821a346a5e592e216fc098c33bbf7759cbed7e178b6fcd3d014f1",
+  "zipHash": "db86f4bf0e9f94135d69b868ed62dabd0fb3138077c228132267c75af089fb5f"
 }
